@@ -20,9 +20,17 @@ void transmit_mqtt(const char * extTopic,const char * Field, const char * payloa
 char ssid[20];
 char password[20];
 
-// Webinterface stuff
-ESP8266WebServer server(80);
+// DNS server
+const byte DNS_PORT = 53;
 DNSServer dnsServer;
+
+// Web server
+ESP8266WebServer server(80);
+
+/* Soft AP network parameters */
+IPAddress apIP(172, 217, 28, 1);
+IPAddress netMsk(255, 255, 255, 0);
+
 
 // MQTT stuff
 WiFiClient espClient;
@@ -35,7 +43,8 @@ const char* Version = "V0.0.1";
 
 // MQTT stuff end
 
-void handlePortal();
+void handleCaptive();
+
 enum system_state
 {
   unknown,
@@ -107,26 +116,6 @@ void Validate_settings() {
     if (user_wifi.period > 60000 ) user_wifi.period = 60000;
 }
 
-void ApMode()
-{
-  WiFi.mode(WIFI_AP);
-  WiFi.setHostname(user_wifi.ssid);
-  Serial.print("Setting soft-AP configuration ... ");
-  //Serial.println(WiFi.softAPConfig(local_IP, gateway, subnet) ? "Ready" : "Failed!");
-
-  // Set up the DNS server
-  dnsServer.start(53, "*", WiFi.softAPIP());
-
-  Serial.print("Setting soft-AP ... ");
-  Serial.println(WiFi.softAP(ssid, NULL) ? "Ready" : "Failed!");
-  // WiFi.softAP(ssid);
-  // WiFi.softAP(ssid, password, channel, hidden, max_connection)
-
-  Serial.print("Soft-AP IP address = ");
-  Serial.println(WiFi.softAPIP());
-  
-  configuration.state = wifi_ap_mode;
-}
 
 void mqtt_callback(char* topic, byte* message, unsigned int length) {
   // Serial.print("Message arrived on topic: ");
@@ -166,43 +155,34 @@ void mqtt_callback(char* topic, byte* message, unsigned int length) {
   }
 }
 
-
-// void setup() {
-//   // Set up the ESP8266 as a WiFi access point
-//   WiFi.mode(WIFI_AP);
-//   WiFi.setHostname("Captive Portal");
-//   WiFi.begin("Captive Portal", "password");
-
-//   // Set up the DNS server
-//   dnsServer.start(53, "*", WiFi.gatewayIP());
-
-//   // Set up the web server
-//   webServer.on("/", HTTP_GET, handleCaptivePortal);
-
-//   // Start the web server
-//   webServer.begin();
-// }
-
-// void loop() {
-//   // Handle DNS requests
-//   dnsServer.processNextRequest();
-
-//   // Handle web requests
-//   webServer.handleClient();
-// }
+void start_in_AP_Mode() {
+  Serial.println("Starting in Access Point mode.");
+  configuration.state = wifi_reset;
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+    // don't use a passcode.
+  WiFi.softAP(ssid); 
+  Serial.print("Deivce IP address: ");
+  Serial.println(WiFi.softAPIP());
 
 
+  /* Setup the DNS server redirecting all the domains to the apIP */
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(DNS_PORT, "*", apIP);
 
-void setup()
-{
-  
-  pinMode(iotResetPin, INPUT_PULLUP);
-  digitalWrite(iotResetPin, HIGH);
+      /* Setup web pages: root, wifi config pages, SO captive portal detectors and not found. */
+  server.on("/", handleCaptive);
+  server.on("/wifi", handleCaptive);
+  server.on("/wifisave", handleCaptive);
+  server.on("/generate_204", handleCaptive);  // Android captive portal. Maybe not needed. Might be handled by notFound handler.
+  server.on("/fwlink", handleCaptive);        // Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
+  server.onNotFound(handleCaptive);
+  server.begin();  // Web server start
+  Serial.println("HTTP server ready for captive page.");
 
+  configuration.state = wifi_ap_mode;
+}
 
-  Serial.begin(9600);
-  Serial.println("Booting");
-
+void hardware_setup() {
   // Initialize PWM Pin
   pinMode(Relais_1, OUTPUT);
   pinMode(Relais_2, OUTPUT);
@@ -232,21 +212,18 @@ void setup()
   digitalWrite(Relais_6, 0x01); delay(200); digitalWrite(Relais_6, 0x00);
   digitalWrite(Relais_7, 0x01); delay(200); digitalWrite(Relais_7, 0x00);
   digitalWrite(Relais_8, 0x01); delay(200); digitalWrite(Relais_8, 0x00);
+}
 
-  configuration.state = booting;
-  EEPROM.begin(sizeof(struct settings));
-  Load_defaults();
-
+void network_setup() {
+  // Generate the SSID. Make it unique using the chip's UID
   sprintf(ssid, "MBE-%08X", ESP.getChipId());
-  sprintf(password, ACCESSPOINT_PASS);
+  // sprintf(password, ACCESSPOINT_PASS);
 
   if (!digitalRead(iotResetPin))
   {
-    Serial.println("recover");
-    configuration.state = wifi_reset;
-    ApMode();
+    start_in_AP_Mode();
   }
-  else
+   else
   {
     configuration.state = wifi_connecting;
     // Read network data.
@@ -267,7 +244,7 @@ void setup()
       if (tries++ > 15)
       {
         Serial.println("Failed, start ApMode()");
-        ApMode();
+        start_in_AP_Mode();
         break;
       }
     }
@@ -278,21 +255,28 @@ void setup()
   {
     configuration.state = wifi_ready;
   }
+}
+
+void setup()
+{
+  
+  pinMode(iotResetPin, INPUT_PULLUP);
+  digitalWrite(iotResetPin, HIGH);
+
+
+  Serial.begin(115200);
+  Serial.println("Booting");
+
+  hardware_setup();
+  
+
+  configuration.state = booting;
+  EEPROM.begin(sizeof(struct settings));
+  Load_defaults();
+  
+  network_setup();
 
   startMillis = millis(); // initial start time
-
-  // Port defaults to 8266
-  // ArduinoOTA.setPort(8266);
-
-  // Hostname defaults to esp8266-[ChipID]
-  // ArduinoOTA.setHostname("myesp8266");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
 
   switch (configuration.state)
   {
@@ -304,11 +288,8 @@ void setup()
 
   case wifi_ap_mode:
     
-    Serial.printf("started WiFi AP %s\n", ssid);
+    
 
-    dnsServer.start(53, "*", WiFi.softAPIP()); // DNS spoofing (Only for HTTP)
-    server.on("/", handlePortal);
-    server.begin();
     break;
 
   case wifi_ready:
@@ -429,6 +410,8 @@ void loop()
   case wifi_ready:
     // wifi connected to network. ready
     ArduinoOTA.handle();
+    // mqtt loop. 
+    client.loop();
     break;
   case wifi_ap_mode:
     // could not connect, waiting for new configuration.
@@ -442,7 +425,7 @@ void loop()
   }
 
  
-  client.loop(); // mqtt loop
+  
   // Blinking led.
    currentMillis = millis();                  // get the current "time" (actually the number of milliseconds since the program started)
 
@@ -492,7 +475,7 @@ void loop()
   }
 }
 
-void handlePortal()
+void handleCaptive()
 {
 
   if (server.method() == HTTP_POST)
@@ -516,6 +499,16 @@ void handlePortal()
   }
   else
   {
-    server.send(200, "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Wifi Setup</title> <style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','Liberation Sans';font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;}.form-control{display:block;width:100%;height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;}button{cursor: pointer;border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}.form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1{text-align: center}</style> </head> <body><main class='form-signin'> <form action='/' method='post'> <h1 class=''>Wifi Setup</h1><br/><div class='form-floating'><label>SSID</label><input type='text' class='form-control' name='ssid'> </div><div class='form-floating'><br/><label>Password</label><input type='password' class='form-control' name='password'></div><br/><br/><button type='submit'>Save</button><p style='text-align: right'><a href='https://www.mbehrens.nl' style='color: #32C5FF'>MBehrens.nl</a></p></form></main> </body></html>");
+    // server.send(200, "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Wifi Setup</title> <style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','Liberation Sans';font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;}.form-control{display:block;width:100%;height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;}button{cursor: pointer;border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}.form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1{text-align: center}</style> </head> <body><main class='form-signin'> <form action='/' method='post'> <h1 class=''>Wifi Setup</h1><br/><div class='form-floating'><label>SSID</label><input type='text' class='form-control' name='ssid'> </div><div class='form-floating'><br/><label>Password</label><input type='password' class='form-control' name='password'></div><br/><br/><button type='submit'>Save</button><p style='text-align: right'><a href='https://www.mbehrens.nl' style='color: #32C5FF'>MBehrens.nl</a></p></form></main> </body></html>");
+     // Get list of available wifi networks
+    String networks = "";
+    int numNetworks = WiFi.scanNetworks();
+    for (int i = 0; i < numNetworks; i++) {
+      networks += "<option value=\"" + WiFi.SSID(i) + "\">" + WiFi.SSID(i) + "</option>";
+    }
+    // Generate HTML form for selecting wifi network and entering password
+    String html = "<html><head><title>Captive Portal</title><style>body{background-color:#222;color:#fff;font-family:Arial,Helvetica,sans-serif}input[type=text],select{padding:12px;border-radius:5px;border:none;margin-bottom:10px}input[type=submit]{background-color:#4CAF50;color:#fff;padding:12px;border-radius:5px;border:none;margin-bottom:10px}input[type=submit]:hover{background-color:#3e8e41}</style></head><body><h1>Captive Portal</h1><form method=\"post\" action=\"/connect\"><label for=\"ssid\">Select Wifi Network:</label><br><select id=\"ssid\" name=\"ssid\">" + networks + "</select><br><label for=\"password\">Enter Wifi Password:</label><br><input type=\"text\" id=\"password\" name=\"password\"><br><input type=\"submit\" value=\"Connect\"></form></body></html>";
+    // Send HTML form as response
+    server.send(200, "text/html", html);
   }
 }
