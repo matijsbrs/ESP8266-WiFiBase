@@ -8,10 +8,12 @@
 #include <TelnetStream.h>
 #include <PubSubClient.h>
 
-
 #include "Credentials.h"
-#include "Ota.h"
+#include "wifi/Ota.h"
+#include "wifi/webpage.h"
+#include "wifi/Captive.h"
 #include "Controls.h"
+#include "settings.h"
 
 // function declarations
 // void mqtt_callback(char* topic, byte* message, unsigned int length);
@@ -31,15 +33,11 @@ ESP8266WebServer server(80);
 IPAddress apIP(172, 217, 28, 1);
 IPAddress netMsk(255, 255, 255, 0);
 
-
 // MQTT stuff
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-const char* applicationUUID = "012345678";
-const char* default_mqtt_server = "192.168.2.201";
-const char* TOPIC = "climate/controller";
-const char* Version = "V0.0.1";
+
 
 // MQTT stuff end
 
@@ -60,15 +58,7 @@ struct system_configuration
   enum system_state state = unknown;
 } configuration;
 
-struct settings
-{
-  char ssid[32];         // the SSID of the netwerk
-  char password[32];     // the WifiPassword
-  char energy_topic[32]; // the path to the topic on which the current wattage is found.
-  char mqtt_server[32];  // Addres of the MQTT server
-  unsigned long period;
-
-} user_wifi = {};
+struct settings user_wifi = {};
 
 const byte iotResetPin = D0;
 
@@ -353,13 +343,13 @@ void transmit_mqtt(const char * extTopic, const char * Field, const char * paylo
 void transmit_mqtt_influx(const char * Field, float value) {
   char payload[75];
   snprintf(payload, 75, "climatic,host=MB-%08X %s=%f",ESP.getChipId(),Field, value);
-  transmit_mqtt(TOPIC, "state", payload);
+  transmit_mqtt(default_mqtt_topic, "state", payload);
 }
 
 void transmit_mqtt_float(const char * Field, float value) {
   char payload[20];
   snprintf(payload, 20, "%f",value);
-  transmit_mqtt(TOPIC, Field, payload);
+  transmit_mqtt(default_mqtt_topic, Field, payload);
 }
 
 
@@ -405,6 +395,9 @@ int pwmCoolWrk = 0;
 int pwmWarmWrk = 0;
 void loop()
 {
+  currentMillis = millis(); // get the current "time" (actually the number of milliseconds since the program started)
+
+  // WiFi State handler
   switch (configuration.state)
   {
   case wifi_ready:
@@ -416,7 +409,7 @@ void loop()
   case wifi_ap_mode:
     // could not connect, waiting for new configuration.
     server.handleClient();
-      // Handle DNS requests
+    // Handle DNS requests
     dnsServer.processNextRequest();
     break;
 
@@ -424,10 +417,7 @@ void loop()
     break;
   }
 
- 
   
-  // Blinking led.
-   currentMillis = millis();                  // get the current "time" (actually the number of milliseconds since the program started)
 
   if ((configuration.state == wifi_ap_mode) && ((currentMillis - startMillis) >= user_wifi.period) ) {
       ShowClients();
@@ -437,78 +427,7 @@ void loop()
 
   if (((currentMillis - startMillis) >= user_wifi.period) && (configuration.state == wifi_ready) )// test whether the period has elapsed
   {
-    // Serial.print("Cool: ");
-    // Serial.print(pwmCoolWrk);
-    // Serial.print(" ");
-    // Serial.println(pwmCool);
-    // Serial.print("Warm: ");
-    // Serial.print(pwmWarmWrk);
-    // Serial.print(" ");
-    // Serial.println(pwmWarm);
-    // Serial.println(encoderPos);
-    // Serial.println(buttonState);
-    // snprintf(value, 32, "%d", encoderPos );
-    // transmit_mqtt("RotaryEncoder","encoderPos",value);
-    // snprintf(value, 32, "%d", pwmCool );
-    // transmit_mqtt("Cool","pwm",value);
-    // snprintf(value, 32, "%d", pwmCoolWrk );
-    // transmit_mqtt("TrueCool","pwm",value);    
-    // snprintf(value, 32, "%d", pwmWarm );
-    // transmit_mqtt("Warm","pwm",value);
-    // snprintf(value, 32, "%d", pwmWarmWrk );
-    // transmit_mqtt("TrueWarm","pwm",value);
-    
-    // Serial.print("Cool: ");
-    // Serial.print(pwmCoolWrk);
-    // Serial.print(" ");
-    // Serial.println(pwmCool);
-    // Serial.print("Warm: ");
-    // Serial.print(pwmWarmWrk);
-    // Serial.print(" ");
-    // Serial.println(pwmWarm);
-    // Serial.println(encoderPos);
-    // Serial.println(buttonState);
-
-    // digitalWrite(Heater_1, !digitalRead(Heater_1));  //if so, change the state of the LED.  Uses a neat trick to change the state
-    
+    // Interval Operating zone
     startMillis = currentMillis; // IMPORTANT to save the start time of the current LED state.
-  }
-}
-
-void handleCaptive()
-{
-
-  if (server.method() == HTTP_POST)
-  {
-
-    strncpy(user_wifi.ssid, server.arg("ssid").c_str(), sizeof(user_wifi.ssid));
-    strncpy(user_wifi.password, server.arg("password").c_str(), sizeof(user_wifi.password));
-    user_wifi.ssid[server.arg("ssid").length()] = user_wifi.password[server.arg("password").length()] = '\0';
-
-    Serial.println(user_wifi.ssid);
-    Serial.println(user_wifi.password);
-
-    // load operational defaults
-    strcpy(user_wifi.mqtt_server, default_mqtt_server);
-   
-    EEPROM.put(0, user_wifi);
-    EEPROM.commit();
-    Serial.println("Ready ");
-
-    server.send(200, "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Wifi Setup</title><style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','Liberation Sans';font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;}.form-control{display:block;width:100%;height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;}button{border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}.form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1,p{text-align: center}</style> </head> <body><main class='form-signin'> <h1>Wifi Setup</h1> <br/> <p>Your settings have been saved successfully!<br />Please restart the device.</p></main></body></html>");
-  }
-  else
-  {
-    // server.send(200, "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Wifi Setup</title> <style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','Liberation Sans';font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;}.form-control{display:block;width:100%;height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;}button{cursor: pointer;border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}.form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1{text-align: center}</style> </head> <body><main class='form-signin'> <form action='/' method='post'> <h1 class=''>Wifi Setup</h1><br/><div class='form-floating'><label>SSID</label><input type='text' class='form-control' name='ssid'> </div><div class='form-floating'><br/><label>Password</label><input type='password' class='form-control' name='password'></div><br/><br/><button type='submit'>Save</button><p style='text-align: right'><a href='https://www.mbehrens.nl' style='color: #32C5FF'>MBehrens.nl</a></p></form></main> </body></html>");
-     // Get list of available wifi networks
-    String networks = "";
-    int numNetworks = WiFi.scanNetworks();
-    for (int i = 0; i < numNetworks; i++) {
-      networks += "<option value=\"" + WiFi.SSID(i) + "\">" + WiFi.SSID(i) + "</option>";
-    }
-    // Generate HTML form for selecting wifi network and entering password
-    String html = "<html><head><title>Captive Portal</title><style>body{background-color:#222;color:#fff;font-family:Arial,Helvetica,sans-serif}input[type=text],select{padding:12px;border-radius:5px;border:none;margin-bottom:10px}input[type=submit]{background-color:#4CAF50;color:#fff;padding:12px;border-radius:5px;border:none;margin-bottom:10px}input[type=submit]:hover{background-color:#3e8e41}</style></head><body><h1>Captive Portal</h1><form method=\"post\" action=\"/connect\"><label for=\"ssid\">Select Wifi Network:</label><br><select id=\"ssid\" name=\"ssid\">" + networks + "</select><br><label for=\"password\">Enter Wifi Password:</label><br><input type=\"text\" id=\"password\" name=\"password\"><br><input type=\"submit\" value=\"Connect\"></form></body></html>";
-    // Send HTML form as response
-    server.send(200, "text/html", html);
   }
 }
