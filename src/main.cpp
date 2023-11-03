@@ -108,14 +108,8 @@ void Validate_settings() {
 
 
 void mqtt_callback(char* topic, byte* message, unsigned int length) {
-  // Serial.print("Message arrived on topic: ");
-  // Serial.print(topic);
-  // Serial.print(". Message: ");
   String messageTemp;
   
-  // char mytopic[32];
-  // snprintf(mytopic, 32, "light-%08X/set", ESP.getChipId());
-
   for (unsigned int i = 0; i < length; i++) {
     // Serial.print((char)message[i]);
     messageTemp += (char)message[i];
@@ -207,7 +201,6 @@ void hardware_setup() {
 void network_setup() {
   // Generate the SSID. Make it unique using the chip's UID
   sprintf(ssid, "MBE-%08X", ESP.getChipId());
-  // sprintf(password, ACCESSPOINT_PASS);
 
   if (!digitalRead(iotResetPin))
   {
@@ -308,11 +301,6 @@ int connect_mqtt() {
   }
 
   Serial.print("Attempting MQTT connection... ");
-
-  // // Create a random client ID
-  // String clientId = "ESP8266Client-";
-  // sprintf(ssid, "light-%08X\n", ESP.getChipId());
-  // clientId += String(random(0xffff), HEX);
 
   // Attempt to connect
   if (client.connect(ssid)) {
